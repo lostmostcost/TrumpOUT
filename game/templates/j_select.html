@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>J 카드 효과 - 대상 선택</title>
+</head>
+<body>
+  <h1>J 카드 효과: 대상 플레이어 선택</h1>
+  <form method="POST">
+    <p>대상 플레이어:
+      <select name="target">
+        {% for name in candidates %}
+          <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </p>
+    <button type="submit">선택</button>
+  </form>
+  <p><a href="/">메인 페이지로 돌아가기</a></p>
+</body>
+</html>

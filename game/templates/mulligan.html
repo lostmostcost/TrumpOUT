@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <meta charset="UTF-8">
+            <title>멀리건 선택</title>
+        </head>
+        <body>
+            <h1>멀리건 (Mulligan)</h1>
+            <p>추가 {{ mulligan_count }}장의 카드를 드로우하여 손패가 {{ total_cards }}장이 되었습니다.<br>
+            아래에서 교체할 정확히 {{ mulligan_count }}장의 카드를 선택하세요.<br>
+            (선택 후 자동으로 폴드되어 턴이 종료됩니다.)</p>
+            <form method="POST">
+                {% for i, card in enumerate(hand) %}
+                    <label>
+                        <input type="checkbox" name="discard_indices" value="{{ i }}">
+                        {{ card_to_html(card)|safe }}
+                    </label><br>
+                {% endfor %}
+                <button type="submit">확인 및 자동 폴드</button>
+            </form>
+        </body>
+        </html>
