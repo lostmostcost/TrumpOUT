@@ -1,0 +1,110 @@
+{% macro hand_zone(hand, action_url="/action", mulligan_cards=None) %}
+<div class="hand-zone">
+  <div class="card-list" id="handContainer"></div>
+  <div class="action-buttons" id="handButtons"></div>
+</div>
+
+<style>
+  .hand-zone {
+    width: 100%;
+    padding: 15px;
+    background-color: #f8f8f8;
+    border-top: 2px solid #ccc;
+  }
+  .card-list {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 10px;
+  }
+  .card-item {
+    display: inline-block;
+    padding: 8px 12px;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background-color: white;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 20px;
+    box-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+  }
+  .card-item.selected {
+    border-color: #2196f3;
+    background-color: #e3f2fd;
+    box-shadow: 0 0 0 2px #1976d2 inset;
+  }
+  .action-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+  }
+</style>
+
+<script>
+function updateHand(data) {
+  const actionUrl = "{{ action_url }}";
+  const container = document.getElementById("handContainer");
+  const buttons = document.getElementById("handButtons");
+  if (!container || !buttons) return;
+  container.innerHTML = "";
+  buttons.innerHTML = "";
+
+  // Mulligan phase: show entire hand (original + drawn)
+  if (data.mulligan_cards && Array.isArray(data.mulligan_cards)) {
+    (data.hand || []).forEach((cardHtml, i) => {
+      const el = document.createElement('div');
+      el.className = 'card-item';
+      el.innerHTML = cardHtml;
+      el.dataset.index = i;
+      el.addEventListener('click', () => el.classList.toggle('selected'));
+      container.appendChild(el);
+    });
+    const discardBtn = document.createElement('button');
+    discardBtn.textContent = `버린다 (${data.mulligan_cards.length})`;
+    discardBtn.onclick = () => {
+      const selected = Array.from(container.querySelectorAll('.selected'))
+        .map(e => e.dataset.index);
+      const form = new FormData();
+      form.append('action_type', 'mulligan_discard');
+      selected.forEach(idx => form.append('discard_indices', idx));
+      fetch(actionUrl, { method: 'POST', body: form }).then(() => window.location.reload());
+    };
+    buttons.appendChild(discardBtn);
+    return;
+  }
+
+  // Normal play
+  (data.hand || []).forEach((cardHtml, i) => {
+    const el = document.createElement('div');
+    el.className = 'card-item';
+    el.innerHTML = cardHtml;
+    el.dataset.index = i;
+    el.addEventListener('click', () => el.classList.toggle('selected'));
+    container.appendChild(el);
+  });
+  const raiseBtn = document.createElement('button');
+  raiseBtn.textContent = '배팅 (Raise)';
+  raiseBtn.onclick = () => {
+    const cards = Array.from(container.querySelectorAll('.selected')).map(e => e.dataset.index);
+    const form = new FormData();
+    form.append('action_type', 'raise');
+    cards.forEach(idx => form.append('card_indices', idx));
+    fetch(actionUrl, { method: 'POST', body: form });
+  };
+  const foldBtn = document.createElement('button');
+  foldBtn.textContent = '폴드 (Fold)';
+  if (data.pending_j || data.j_target_hand) {
+    foldBtn.disabled = true;           // Disable fold during J effect
+    raiseBtn.disabled = true;
+  }
+  foldBtn.onclick = () => {
+    const form = new FormData();
+    form.append('action_type', 'fold');
+    fetch(actionUrl, { method: 'POST', body: form });
+  };
+  buttons.appendChild(raiseBtn);
+  buttons.appendChild(foldBtn);
+}
+</script>
+{% endmacro %}

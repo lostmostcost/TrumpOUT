@@ -1,0 +1,202 @@
+{% macro sidebar() %}
+<div class="sidebar">
+  <style>
+    .turn-box {
+      background-color: #f5f5f5;
+      border-radius: 10px;
+      padding: 10px;
+      margin-bottom: 15px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .round-indicator {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 10px;
+    }
+    .round-dot {
+      width: 10px;
+      height: 10px;
+      border: 1px solid #ccc;
+      border-radius: 50%;
+      background-color: transparent;
+    }
+    .round-dot.completed {
+      background-color: #4caf50;  /* 지난 라운드 */
+      border-color: #4caf50;
+    }
+    .round-dot.current {
+      background-color: #ff9800;  /* 현재 라운드 */
+      border-color: #ff9800;
+    }
+    .turn-sequence {
+      display: flex;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .turn-player-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .turn-player {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 20px;
+      background-color: #e0e0e0;
+    }
+    .turn-player.current {
+      font-weight: bold;
+      background-color: #cce5ff;
+      color: #004085;
+    }
+    .turn-player.folded {
+      opacity: 0.1;
+    }
+    .arrow {
+      font-size: 20px;
+      margin: 10px 5px 0 5px;
+      align-self: flex-end;
+    }
+    .score-cell {
+      position: relative;
+    }
+    .score-cell:hover .tooltip {
+      display: block;
+    }
+    .tooltip {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: #fff;
+      border: 1px solid #ccc;
+      padding: 5px;
+      font-size: 12px;
+      white-space: nowrap;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      z-index: 10;
+    }
+
+    /* Player status table styling */
+    .player-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      font-size: 14px;
+    }
+    .player-table th,
+    .player-table td {
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      text-align: center;
+    }
+    .player-table th {
+      background-color: #f0f0f0;
+      font-weight: bold;
+    }
+    .player-table tbody tr:nth-child(even) {
+      background-color: #fafafa;
+    }
+    .player-table tbody tr:hover {
+      background-color: #f5f5f5;
+    }
+  </style>
+
+  <div class="turn-box">
+    <div class="round-indicator" id="roundIndicator"></div>
+    <div class="turn-sequence" id="turnSequence"></div>
+  </div>
+
+  <table class="player-table">
+    <thead>
+      <tr>
+        <th>이름</th>
+        <th>상태</th>
+        <th>패</th>
+        <th>점수</th>
+      </tr>
+    </thead>
+    <tbody id="playerStatus"></tbody>
+  </table>
+</div>
+
+<script>
+function updateSidebar(data) {
+  // 라운드 인디케이터: 전체(total_rounds), 완료(completed_rounds), 현재(current)
+  const roundContainer = document.getElementById("roundIndicator");
+  if (roundContainer && data.total_rounds != null && data.completed_rounds != null) {
+    roundContainer.innerHTML = '';
+    for (let i = 0; i < data.total_rounds; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'round-dot';
+      if (i < data.completed_rounds) {
+        dot.classList.add('completed');
+      } else if (i === data.completed_rounds) {
+        dot.classList.add('current');
+      }
+      roundContainer.appendChild(dot);
+    }
+  }
+
+  // Turn sequence
+  const turnContainer = document.getElementById("turnSequence");
+  if (turnContainer && data.turn_order) {
+    turnContainer.innerHTML = '';
+    data.turn_order.forEach((name, idx) => {
+      const status = data.players[name]?.['행동'] || '';
+      const isCurrent = name === data.current_turn;
+      const isFolded = status === '폴드' || status === '멀리건';
+
+      const wrap = document.createElement('div');
+      wrap.className = 'turn-player-wrapper';
+      const span = document.createElement('span');
+      span.className = 'turn-player';
+      if (isCurrent) span.classList.add('current');
+      if (isFolded) span.classList.add('folded');
+      span.textContent = name;
+      wrap.appendChild(span);
+      turnContainer.appendChild(wrap);
+
+      if (idx < data.turn_order.length - 1) {
+        const arrow = document.createElement('span');
+        arrow.className = 'arrow';
+        arrow.textContent = '➜';
+        turnContainer.appendChild(arrow);
+      }
+    });
+  }
+
+  // Player status table
+  const body = document.getElementById('playerStatus');
+  if (body && data.players) {
+    body.innerHTML = '';
+    Object.entries(data.players).forEach(([name, info]) => {
+      const tr = document.createElement('tr');
+      ['이름', '행동', '남은 패'].forEach(key => {
+        const td = document.createElement('td');
+        if (key === '이름') {
+          td.textContent = name;
+        } else {
+          const val = info[key];
+          // show "0" when remaining cards is zero
+          td.textContent = (val === 0 || val) ? val : '';
+        }
+        tr.appendChild(td);
+      });
+      const tdScore = document.createElement('td');
+      tdScore.className = 'score-cell';
+      tdScore.textContent = info['누적 승점'] || 0;
+      const tip = document.createElement('div');
+      tip.className = 'tooltip';
+      if (info.score_cards) tip.innerHTML = info.score_cards.join(', ');
+      tdScore.appendChild(tip);
+      tr.appendChild(tdScore);
+      body.appendChild(tr);
+    });
+  }
+}
+</script>
+{% endmacro %}

@@ -5,200 +5,67 @@
   <title>TrumpOUT</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
   <script type="text/javascript">
-      var socket = io();
-      socket.on('connect', function() {
-          console.log('서버와 연결되었습니다.');
-      });
-      socket.on('game_state_update', function(data) {
-    if (data.round_over) {
-        // 라운드 종료 시 500ms 후 전체 페이지를 새로고침하여 클라이언트 상태를 갱신합니다.
-        setTimeout(function() { location.reload(); }, 500);
-        return;
-    }
-    
-    // 배팅 내역 업데이트
-    var betHistoryContainer = document.getElementById("betHistory");
-    if (betHistoryContainer) {
-        var betHistoryHtml = "";
-        if (data.bet_history && data.bet_history.length > 0) {
-            data.bet_history.forEach(function(entry) {
-                betHistoryHtml += "<div class='bet-entry'>";
-                betHistoryHtml += "<div class='bet-header'><strong>" + entry[0] + "</strong>님의 배팅 - [합: " + entry[2] + "]</div>";
-                betHistoryHtml += "<div>사용한 카드:<br>" + entry[1].join("<br>") + "</div>";
-                betHistoryHtml += "</div>";
-            });
-        } else {
-            betHistoryHtml = "<p>배팅 내역이 없습니다.</p>";
-        }
-        betHistoryContainer.innerHTML = betHistoryHtml;
-    }
-    
-    // 현재 라운드 선플레이어 업데이트
-    var firstPlayerContainer = document.getElementById("firstPlayer");
-    if (firstPlayerContainer) {
-        firstPlayerContainer.innerHTML = "현재 라운드 선플레이어: " + data.first_player;
-    }
-    
-    // 턴 진행 순서 업데이트
-    var turnOrderContainer = document.getElementById("turnOrder");
-    if (turnOrderContainer) {
-        if (data.turn_order && data.current_turn) {
-            var turnOrderHtml = "턴 진행 순서: ";
-            data.turn_order.forEach(function(name, index) {
-                if (name === data.current_turn) {
-                    turnOrderHtml += "<span class='current'>" + name + "</span>";
-                } else {
-                    turnOrderHtml += name;
-                }
-                if (index != data.turn_order.length - 1) {
-                    turnOrderHtml += " → ";
-                }
-            });
-            turnOrderContainer.innerHTML = turnOrderHtml;
-        } else {
-            turnOrderContainer.innerHTML = "턴 진행 순서를 불러올 수 없습니다.";
-        }
-    }
-    
-    // 실시간 플레이어 현황 업데이트 (테이블 본문)
-    var playerStatusContainer = document.getElementById("playerStatus");
-    if (playerStatusContainer) {
-        var playerStatusHtml = "";
-        if (data.players) {
-            for (var playerName in data.players) {
-                var status = data.players[playerName];
-                playerStatusHtml += "<tr>";
-                playerStatusHtml += "<td>" + playerName + "</td>";
-                playerStatusHtml += "<td>" + status['행동'] + "</td>";
-                playerStatusHtml += "<td>" + status['남은 패'] + "</td>";
-                playerStatusHtml += "<td>" + status['누적 승점'] + "</td>";
-                playerStatusHtml += "<td>" + status['선플레이어 횟수'] + "</td>";
-                playerStatusHtml += "<td>" + (status['score_cards'] ? status['score_cards'].join(", ") : "") + "</td>";
-                playerStatusHtml += "</tr>";
-            }
-        } else {
-            playerStatusHtml = "<tr><td colspan='6'>플레이어 정보를 불러올 수 없습니다.</td></tr>";
-        }
-        playerStatusContainer.innerHTML = playerStatusHtml;
-    }
-});
+    var wasPendingJ = false;
+    var reloadedOnRoundOver = false;
+    var socket = io();
+    socket.on('connect', function() {
+      console.log('서버와 연결되었습니다.');
+    });
+    socket.on('game_state_update', function(data) {
+      // 사이드바, 핸드, 대시보드 동시 업데이트
+      updateSidebar(data);
+      updateHand(data);
+      updateDashboard(data);
+    });
+    socket.on('game_over', function() {
+      // 모든 플레이어가 즉시 결과 화면으로 이동
+      window.location.reload();
+    });
   </script>
   <style>
-    .current { font-weight: bold; color: blue; }
-    .bet-entry { margin-bottom: 10px; padding: 5px; border-bottom: 1px solid #ccc; }
-    .bet-header { font-weight: bold; }
+    body {
+      margin: 10px;
+    }
     .container { display: flex; }
-    .left { flex: 2; padding: 10px; }
-    .right { flex: 1; padding: 10px; border-left: 2px solid #ccc; }
+    .left      { flex: 1.5; padding: 10px; }
+    .right     { flex: 1; padding: 10px; }
+    .dashboard { margin-bottom: 20px; }
   </style>
 </head>
 <body>
-  <h1>TrumpOUT 게임</h1>
+  <h4>TrumpOUT</h4>
   <p>플레이어: {{ player_name }}</p>
+
+  {% from "sidebar.html"   import sidebar %}
+  {% from "dashboard.html" import dashboard %}
+  {% from "hand_zone.html" import hand_zone %}
+
   {% if game_over %}
-      <h2>게임 종료</h2>
-      <p>최종 점수:</p>
-      <ul>
-        {% for name, score in final_scores.items() %}
-          <li>{{ name }}: {{ score }}</li>
-        {% endfor %}
-      </ul>
-      <br><a href="/reset">게임 초기화</a>
+    <h2>게임 종료</h2>
+    <p>최종 점수:</p>
+    <ul>
+      {% for name, score in final_scores.items() %}
+        <li>{{ name }}: {{ score }}</li>
+      {% endfor %}
+    </ul>
+    <br><a href="/reset">게임 초기화</a>
+
   {% else %}
     <div class="container">
       <div class="left">
-        <h3>내 상태</h3>
-        <p>남은 패: {{ hand_count }} 장</p>
-        <h3>내 손패 및 선택</h3>
-        <form method="POST" action="/action">
-            <input type="hidden" name="action_type" value="raise">
-            <ul id="handContainer">
-                {% for i, card in enumerate(hand) %}
-                    <li>
-                        <label>
-                            <input type="checkbox" name="card_indices" value="{{ i }}">
-                            {{ card_to_html(card)|safe }}
-                        </label>
-                    </li>
-                {% endfor %}
-            </ul>
-            <button type="submit">배팅 (Raise)</button>
-        </form>
-        <br>
-        <form method="POST" action="/action">
-          <input type="hidden" name="action_type" value="fold">
-          <button type="submit">폴드 (Fold)</button>
-        </form>
-        <h3>배팅 내역 (최신 순)</h3>
-        {% if bet_history %} 
-          <ul id="betHistory">
-            {% for entry in bet_history %}
-              <li class="bet-entry">
-                <div class="bet-header">
-                  <strong>{{ entry[0] }}</strong>님의 배팅 - [합: {{ entry[2] }}]
-                </div>
-                <div>
-                  사용한 카드:<br>
-                  {% for card in entry[1] %}
-                    {{ card|safe }}{% if not loop.last %}<br>{% endif %}
-                  {% endfor %}
-                </div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p id="betHistory">배팅 내역이 없습니다.</p>
-        {% endif %}
+        {{ dashboard() }}
       </div>
       <div class="right">
-         <h3 id="firstPlayer">현재 라운드 선플레이어: {{ first_player }}</h3>
-         <h3>턴 진행 순서:</h3>
-         <p id="turnOrder">
-          {% for name in turn_order %}
-             {% if name == current_turn %}
-               <span class="current">{{ name }}</span>
-             {% else %}
-               {{ name }}
-             {% endif %}
-             {% if not loop.last %} → {% endif %}
-          {% endfor %}
-         </p>
-         {% if pending_j %}
-           <p><a href="/j_select">J 카드 효과 사용: 대상 플레이어 선택</a></p>
-         {% endif %}
-         <h3>실시간 플레이어 현황</h3>
-         <table border="1" cellpadding="5" cellspacing="0">
-           <tr>
-             <th>플레이어</th>
-             <th>최근 행동</th>
-             <th>남은 패</th>
-             <th>누적 승점</th>
-             <th>선플레이어 횟수</th>
-             <th>획득 카드</th>
-           </tr>
-           <tbody id="playerStatus">
-           {% for ps in player_status %}
-           <tr>
-             <td>{{ ps['이름'] }}</td>
-             <td>{{ ps['행동'] }}</td>
-             <td>{{ ps['남은 패'] }}</td>
-             <td>{{ ps['누적 승점'] }}</td>
-             <td>{{ ps['선플레이어 횟수'] }}</td>
-             <td>
-               {% for card in ps['score_cards'] %}
-                 {{ card|safe }}{% if not loop.last %}, {% endif %}
-               {% endfor %}
-             </td>
-           </tr>
-           {% endfor %}
-           </tbody>
-         </table>
+        {{ sidebar() }}
       </div>
     </div>
+
+    {{ hand_zone() }}
   {% endif %}
+
   <br>
   <form method="GET" action="/logout">
-      <button type="submit">나가기</button>
+    <button type="submit">나가기</button>
   </form>
   <div id="gameState" style="display: none;"></div>
 </body>

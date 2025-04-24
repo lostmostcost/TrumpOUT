@@ -1,0 +1,402 @@
+{% macro dashboard() %}
+<div class="dashboard">
+  <div class="graph-container">
+    <div class="graph-bars" id="graphBars"></div>
+    <!-- J card effect UI (shown only to the activator) -->
+    <div id="jEffectBox" style="display:none;"></div>
+  </div>
+  <br>
+  <div class="bet-boxes" id="betBoxes"></div>
+  <!-- one‑line error message -->
+  <div id="errorBar" class="error-bar" style="display:none;"></div>
+  <!-- one‑line info message (blue) -->
+  <div id="infoBar" class="info-bar" style="display:none;"></div>
+</div>
+<style>
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.graph-container {
+  width: 100%;
+  height: 220px;
+  background-color: #fafafa;
+  border: 2px solid #ddd;
+  padding: 10px;
+  box-sizing: border-box;
+  position: relative;
+}
+.graph-sep {
+  position: relative;
+  z-index: 1;
+  width: 1px;
+  background: #000;
+  height: 105%;
+}
+.graph-bars {
+  display: flex;
+  align-items: flex-end;
+  height: 105%;
+  gap: 4px;
+}
+.graph-bar {
+  position: relative;
+  z-index: 2;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  transition: height 0.3s;
+}
+.graph-bar.normal { background-color: #e74c3c; }
+.graph-bar.reversed { background-color: #3498db; }
+
+.bet-boxes {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  padding-bottom: 8px;
+}
+.bet-box {
+  flex: 0 0 120px;
+  width: 120px;
+  height: 120px;
+  background-color: #fff;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 8px;
+  text-align: center;
+  box-sizing: border-box;
+}
+.bettor { font-weight: bold; margin: 0 0 4px; }
+.amount { margin: 0; color: #555; }
+.bet-cards {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.bet-card {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  background-color: #f0f0f0;
+  font-size: 0.9em;
+}
+
+/* J card effect */
+#jEffectBox {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+.j-btn,
+.j-card {
+  cursor: pointer;
+  padding: 6px 10px;
+  border: 1px solid #666;
+  border-radius: 4px;
+  background: #fff;
+  transition: background 0.15s;
+}
+.j-card:hover,
+.j-btn:hover {
+  background: #eef;
+}
+#jEffectBox {
+  position: relative;
+  z-index: 3;
+}
+.j-effect-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 2px;
+  width: 100%;
+}
+
+/* J effect: tighter spacing for guide and header */
+#jEffectBox p {
+  margin: 2px 0;
+  font-weight: bold;
+}
+
+.error-bar {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background-color: #ffe6e6;
+  border: 1px solid #ff4d4d;
+  color: #b30000;
+  font-weight: bold;
+  text-align: center;
+}
+.info-bar {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background-color: #e6f7ff;
+  border: 1px solid #4da6ff;
+  color: #004c99;
+  font-weight: bold;
+  text-align: center;
+}
+
+.tick-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background-color: #eee;
+}
+</style>
+<script>
+// --- Graph data handling (rolling 10 bets, no baseline bar) ---
+const MAX_VISIBLE = 15;   // number of bet bars to show
+const GAP_PX = 4;         // gap between bars
+const SEP_W = 2;          // separator width
+
+let jStage = null;  // null | "select" | "discard" — keeps current J progress per user
+let betValues = [];              // cumulative values (includes baseline sentinel 0)
+let separators = [];             // indices where round separators are drawn
+let sentinel = new Set();        // indices that are baseline 0 and shouldn't render
+const processedPerRound = {};    // roundKey -> processed count
+
+function pushBets(graphData, roundKey){
+  const ordered = [...graphData].reverse(); // chronological
+
+  // If first time seeing this roundKey, reset baseline and add separator
+  if(!(roundKey in processedPerRound)){
+    processedPerRound[roundKey] = 0;
+
+    // add separator BETWEEN rounds (skip on very first round)
+    if(betValues.length && separators[separators.length-1] !== betValues.length){
+      separators.push(betValues.length);
+    }
+    // insert baseline 0 sentinel
+    betValues.push(0);
+    sentinel.add(betValues.length-1);
+  }
+
+  const startIdx = processedPerRound[roundKey];
+
+  // add any new bets for this round
+  for(let i=startIdx; i<ordered.length; i++){
+    betValues.push(ordered[i].value);
+  }
+  processedPerRound[roundKey] = ordered.length;
+
+  // Keep only last MAX_VISIBLE *visible* bars (exclude separators and sentinels)
+  const visBars = betValues.length - separators.length - sentinel.size;
+  if(visBars > MAX_VISIBLE){
+    const remove = visBars - MAX_VISIBLE;
+    for(let r=0; r<remove; r++){
+      betValues.shift();
+      // adjust separators
+      separators = separators.map(s=>s-1).filter(s=>s>0);
+    }
+    // adjust sentinel indices
+    const newSentinel = new Set();
+    sentinel.forEach(idx=>{
+      const n = idx - remove;
+      if(n>0) newSentinel.add(n);
+    });
+    sentinel = newSentinel;
+  }
+}
+
+function renderGraph(container){
+  container.innerHTML='';
+  if(betValues.length===0) return;
+
+  // Use parent graph-container height to avoid 0-height flex issue
+  const graphHeight = container.parentElement.clientHeight || 200;
+  const maxVal = Math.max(...betValues,1);
+  const hUnit = graphHeight / maxVal;
+
+  // constant bar width based on MAX_VISIBLE slots, regardless of current count
+  const containerWidth = container.parentElement.clientWidth || 600;
+  const sepCount = Math.min(separators.filter(i => i < betValues.length).length, MAX_VISIBLE - 1);
+  const barWidth = Math.max(6,
+    (containerWidth - (MAX_VISIBLE - 1) * GAP_PX - sepCount * SEP_W) / MAX_VISIBLE);
+
+  let lastWasSep = false;   // prevent consecutive separators
+  for (let i = 0; i < betValues.length; i++) {
+    // round separator before the bar
+    if (separators.includes(i)) {
+      if (!lastWasSep) {              // only if previous wasn't separator
+        const sep = document.createElement('div');
+        sep.className = 'graph-sep';
+        container.appendChild(sep);
+        lastWasSep = true;
+      }
+      continue;  // do not attempt to render a bar at separator index
+    } else {
+      lastWasSep = false;
+    }
+
+    if (sentinel.has(i)) {
+      continue;  // do not render baseline bar
+    }
+    const prev = i === 0 ? 0 : betValues[i - 1];
+    const cur  = betValues[i];
+    const delta = cur - prev;
+    const height = Math.abs(delta) * hUnit;
+    const bar = document.createElement('div');
+    bar.className = 'graph-bar ' + (delta>=0 ? 'normal' : 'reversed');
+    bar.style.width = barWidth + 'px';
+    bar.style.height = height + 'px';
+    bar.style.marginBottom = (Math.min(prev,cur) * hUnit) + 'px';
+    // show delta and final value on hover
+    bar.title = `변화량: ${delta >= 0 ? '+' + delta : delta}, 값: ${cur}`;
+    container.appendChild(bar);
+  }
+}
+
+
+
+function updateDashboard(data) {
+  const jBox = document.getElementById('jEffectBox');
+  /* --- Maintain local J stage so it doesn't reset when others act --- */
+  if (data.pending_j) {
+    if (data.j_target_hand) {
+      jStage = "discard";
+    } else if (!jStage) {
+      jStage = "select";
+    }
+  } else {
+    jStage = null;
+  }
+
+  if (jStage) {
+    // hide normal graph
+    document.getElementById('graphBars').style.display = 'none';
+    jBox.style.display = 'flex';
+    jBox.innerHTML = '';
+
+    if (jStage === "discard" && data.j_target_hand) {
+      // show which player's hand is revealed
+      if (data.j_target) {
+        const guide = document.createElement('p');
+        guide.textContent = `${data.j_target}님의 패를 확인 중입니다. 버릴 카드를 한 장 선택하세요.`;
+        jBox.appendChild(guide);
+      }
+
+      // card selection row
+      const cardRow = document.createElement('div');
+      cardRow.className = 'j-effect-row';
+      data.j_target_hand.forEach((html, idx) => {
+        const span = document.createElement('span');
+        span.className = 'j-card';
+        span.innerHTML = html;
+        span.onclick = () => {
+          const f = new FormData();
+          f.append('action_type', 'j_discard');
+          f.append('discard_indices', idx);
+          fetch('/action', { method: 'POST', body: f });
+        };
+        cardRow.appendChild(span);
+      });
+      jBox.appendChild(cardRow);
+      return; // skip normal dashboard rendering
+    }
+
+    if (jStage === "select" && data.j_candidates) {
+      const guide = document.createElement('p');
+      guide.textContent = '패를 확인할 플레이어를 선택하세요.';
+      jBox.appendChild(guide);
+
+      // player selection row
+      const btnRow = document.createElement('div');
+      btnRow.className = 'j-effect-row';
+      data.j_candidates.forEach(name => {
+        const btn = document.createElement('button');
+        btn.className = 'j-btn';
+        btn.textContent = name;
+        btn.onclick = () => {
+          const f = new FormData();
+          f.append('action_type', 'j_select');
+          f.append('target', name);
+          fetch('/action', { method: 'POST', body: f });
+        };
+        btnRow.appendChild(btn);
+      });
+      jBox.appendChild(btnRow);
+      return; // skip normal dashboard rendering
+    }
+  } else {
+    // Not in J effect
+    if (jBox) jBox.style.display = 'none';
+    document.getElementById('graphBars').style.display = 'flex';
+  }
+  // ---- Candlestick with baseline ----
+  const roundKey = `${data.total_rounds}_${data.completed_rounds}`;
+  pushBets(data.graph_data||[],roundKey);
+
+  const graphBars = document.getElementById('graphBars');
+  if (graphBars) {
+    // Draw dynamic tick lines based on current max bet
+    const graphContainer = graphBars.parentElement;
+    // Remove old ticks
+    graphContainer.querySelectorAll('.tick-line').forEach(el => el.remove());
+    const graphHeight = graphContainer.clientHeight || 200;
+    const maxVal = Math.max(...betValues,1);
+    for (let i = 1; i < maxVal; i++) {
+      const y = graphHeight - (i / maxVal) * graphHeight;
+      const line = document.createElement('div');
+      line.className = 'tick-line';
+      line.style.top = y + 'px';
+      graphContainer.appendChild(line);
+    }
+    // Render bars
+    renderGraph(graphBars);
+  }
+  // 베팅 기록 업데이트
+  const betBoxes = document.getElementById('betBoxes');
+  if (betBoxes) {
+    betBoxes.innerHTML = '';
+    (data.recent_bets || []).forEach(bet => {
+      const box = document.createElement('div');
+      box.className = 'bet-box';
+      // 카드 목록 렌더링
+      const cardsHtml = (bet.cards || []).map(c => `
+        <span class="bet-card">${c}</span>
+      `).join(' ');
+      box.innerHTML = `
+        <p class="bettor">${bet.player}</p>
+        <p class="amount">${bet.value}</p>
+        <div class="bet-cards">${cardsHtml}</div>
+      `;
+      betBoxes.appendChild(box);
+    });
+  }
+  // 오류 메시지 표시
+  const errBar = document.getElementById('errorBar');
+  if (errBar) {
+    if (data.error_message) {
+      errBar.textContent = data.error_message;
+      errBar.style.display = 'block';
+    } else {
+      errBar.style.display = 'none';
+      errBar.textContent = '';
+    }
+  }
+  // 정보 메시지 표시 (e.g., J discard)
+  const iBar = document.getElementById('infoBar');
+  if (iBar) {
+    if (data.info_message) {
+      iBar.innerHTML = data.info_message;
+      iBar.style.display = 'block';
+    } else {
+      iBar.style.display = 'none';
+      iBar.innerHTML = '';
+    }
+  }
+}
+</script>
+{% endmacro %}

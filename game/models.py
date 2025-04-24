@@ -2,25 +2,46 @@ from flask import session
 import random
 
 # 밸런스 조정용 변수들
-PLAYER_COUNT = 2           # 참여 플레이어 수
-HAND_COUNT = 5             # 초기 패의 장수
-MULLIGAN_COUNT = 3         # 멀리건 시 추가로 뽑는 카드 장수
+PLAYER_COUNT = 3         # 참여 플레이어 수
+HAND_COUNT = 6            # 초기 패의 장수
+MULLIGAN_COUNT = 6        # 멀리건 시 추가로 뽑는 카드 장수
 MAX_CARDS_PER_PLAY = 2     # 한 번에 낼 수 있는 숫자 카드 최대 장수
-FIRST_PLAYER_THRESHOLD = 2 # 각 플레이어가 선플레이어한 횟수가 이 수치를 넘으면 게임 종료
+FIRST_PLAYER_THRESHOLD = 5 # 각 플레이어가 선플레이어한 횟수가 이 수치를 넘으면 게임 종료
 
 def card_to_html(card):
     """Card 객체를 기호와 색상으로 표시하는 HTML 문자열 반환"""
-    if card.is_special():
-        return f'<span style="color: purple; font-weight: bold;">{card.rank.upper()}</span>'
+    symbol_map = {
+        "Hearts": "♥", "Diamonds": "♦",
+        "Clubs": "♣", "Spades": "♠",
+        "Black": "🃏", "Color": "🃏"
+    }
+    symbol = symbol_map.get(card.suit, "")
+    if card.rank.lower() == "joker":
+        if card.suit == "Black":
+            color = "black"
+        elif card.suit == "Color":
+            color = "orange"
     else:
-        symbol_map = {"Hearts": "♥", "Diamonds": "♦", "Clubs": "♣", "Spades": "♠"}
-        symbol = symbol_map.get(card.suit, "")
         color = "red" if card.suit in ["Hearts", "Diamonds"] else "black"
-        return f'<span style="color: {color};">{card.rank}{symbol}</span>'
+    # Add tooltip for special cards
+    tooltip = ""
+    if card.is_special():
+        rank = card.rank.lower()
+        if rank == "j":
+            tooltip = "플레이어를 선택해 패를 보고 한 장 버리기"
+        elif rank == "q":
+            tooltip = "레이즈 방향 역전"
+        elif rank == "k":
+            tooltip = "함께 내는 숫자에 +5 (역방향일 때 -5)"
+        elif rank == "joker":
+            tooltip = "마지막 플레이어 레이즈 값 카피 (점수 계산 X)"
+    if tooltip:
+        return f'<span title="{tooltip}" style="color: {color};">{card.rank.upper()}{symbol}</span>'
+    return f'<span style="color: {color};">{card.rank.upper()}{symbol}</span>'
 
 class Card:
     def __init__(self, suit, rank):
-        self.suit = suit  # 숫자 카드: "Hearts", "Diamonds", "Clubs", "Spades"
+        self.suit = suit  # "Hearts", "Diamonds", "Clubs", "Spades"
         self.rank = rank  # 숫자: "1"~"10" 또는 특수: "j", "q", "k", "joker"
 
     def __repr__(self):
@@ -50,10 +71,11 @@ class Deck:
         for suit in suits:
             for rank in map(str, range(1, 11)):
                 self.cards.append(Card(suit, rank))
-        for rank in ["j", "q", "k"]:
-            for _ in range(2):  # 현재 코드에서는 2장씩 사용
-                self.cards.append(Card(None, rank))
-        self.cards.append(Card(None, "joker"))
+        for suit in suits:
+            for rank in ["j", "q", "k"]:
+                self.cards.append(Card(suit, rank))
+        self.cards.append(Card("Black", "joker"))
+        self.cards.append(Card("Color", "joker"))
     
     def refresh_deck(self, game):
         full = {}
@@ -62,9 +84,11 @@ class Deck:
         for suit in suits:
             for rank in map(str, range(1, 11)):
                 full[(suit, rank)] = full.get((suit, rank), 0) + 1
-        for rank in ["j", "q", "k"]:
-            full[(None, rank)] = 2
-        full[(None, "joker")] = 1
+        for suit in suits:
+            for rank in ["j", "q", "k"]:
+                full[(suit, rank)] = 1
+        full[( "Black", "joker")] = 1
+        full[( "Color", "joker")] = 1
 
         in_play = {}
         def add_card(card):
@@ -76,7 +100,6 @@ class Deck:
                 add_card(card)
             for card in p.score_cards:
                 add_card(card)
-        # 여기서 현재 진행 중인 라운드의 bet_history를 참조합니다.
         if game.current_round is not None:
             for entry in game.current_round.bet_history:
                 for card in entry[1]:
@@ -99,11 +122,6 @@ class Deck:
                     break
             drawn.append(self.cards.pop())
         return drawn
-
-    def add_cards(self, cards):
-        self.cards.extend(cards)
-        random.shuffle(self.cards)
-
 class Player:
     def __init__(self, name):
         self.name = name
@@ -131,7 +149,7 @@ class Round:
         self.first_player_index = first_player_index
         self.current_turn_index = first_player_index
         self.current_highest = 0
-        self.bet_history = []  # (플레이어 이름, [Card, ...], 최종 계산 점수, 특수 효과)
+        self.bet_history = []  # (플레이어 이름, [Card, ...], 숫자 합, 특수 효과)
         self.active_players = {p.name: p for p in players}
         self.round_over = False
         self.winner = None
@@ -146,60 +164,62 @@ class Round:
                 return cur
         return None
 
-    def player_raise(self, player, selected_card_indices, target_player=None):
+    def player_raise(self, player, selected_card_indices):
         if not selected_card_indices:
             return False, "최소 한 장 이상의 카드를 선택해야 합니다."
         try:
             selected_cards = [player.hand[i] for i in selected_card_indices]
         except IndexError:
             return False, "잘못된 카드 인덱스입니다."
+        
         special_cards = [card for card in selected_cards if card.is_special()]
         numeric_cards = [card for card in selected_cards if not card.is_special()]
         if len(special_cards) > 1:
             return False, "한 번에 특수 카드는 최대 1장만 사용할 수 있습니다."
         allowed = MAX_CARDS_PER_PLAY if not special_cards else MAX_CARDS_PER_PLAY + 1
         if len(selected_cards) > allowed:
-            return False, f"한 번에 낼 수 있는 전체 카드 수는 최대 {allowed}장입니다."
+            return False, f"한 번에 낼 수 있는 전체 카드 수는 숫자 카드 {MAX_CARDS_PER_PLAY}장, 특수 카드 1장 입니다."
         if special_cards and not numeric_cards:
             return False, "특수 카드는 반드시 숫자 카드와 함께 제출해야 합니다."
-        base_sum = sum(card.numeric_value() for card in numeric_cards)
-        effective_value = base_sum
+        
+        value = sum(card.numeric_value() for card in numeric_cards)
         special_effect = None
         new_reversed = self.reversed
 
         if special_cards:
             sp = special_cards[0]
             rank = sp.rank.lower()
-            if rank == "j":
-                special_effect = "J"
-                session['pending_j'] = True
-            elif rank == "q":
+            if rank == "q":
                 special_effect = "Q"
                 new_reversed = not self.reversed
             elif rank == "k":
                 special_effect = "K"
-                # 수정: 정방향이면 base_sum에 5를 더하고, 역방향이면 5를 뺍니다.
+                # 정방향이면 value에 5를 더하고, 역방향이면 5를 뺍니다.
                 if not self.reversed:
-                    effective_value = base_sum + 5
+                    value += 5
                 else:
-                    effective_value = base_sum - 5
+                    value -= 5
             elif rank == "joker":
                 special_effect = "joker"
                 if not self.reversed:
-                    effective_value = base_sum + self.current_highest
+                    value += self.current_highest
                 else:
-                    effective_value = self.current_highest - base_sum
+                    value = self.current_highest - value
 
         if not new_reversed:
-            if self.current_highest != 0 and effective_value <= self.current_highest:
-                return False, f"제출한 숫자({effective_value})는 현재 최고({self.current_highest})보다 커야 합니다."
+            if value <= self.current_highest:
+                return False, f"제출한 숫자({value})는 현재 최고({self.current_highest})보다 커야 합니다."
         else:
-            if self.current_highest != 0 and effective_value >= self.current_highest:
-                return False, f"(q 효과) 제출한 숫자({effective_value})는 현재 최고({self.current_highest})보다 작아야 합니다."
-        # joker 효과에 대해 score_sum은 숫자 카드의 합(base_sum)만 인정합니다.
-        score_sum = base_sum if special_effect == "joker" else effective_value
-        self.bet_history.append((player.name, selected_cards, score_sum, special_effect))
-        self.current_highest = effective_value
+            if value >= self.current_highest:
+                return False, f"(q 효과) 제출한 숫자({value})는 현재 최고({self.current_highest})보다 작아야 합니다."
+        
+        # After passing the numeric comparison, handle J effect last
+        if special_cards and special_cards[0].rank.lower() == "j":
+            special_effect = "J"
+            session['pending_j'] = True
+
+        self.bet_history.append((player.name, selected_cards, value, special_effect))
+        self.current_highest = value
         self.reversed = new_reversed
         player.current_bet_cards = selected_cards
         player.has_raised = True
@@ -212,7 +232,7 @@ class Round:
         if player.name in self.active_players:
             del self.active_players[player.name]
         player.last_action = "폴드"
-        return True, "폴드 처리 완료."
+        return True, "fold 처리 완료."
 
     def check_round_over(self):
         # active_players가 0이면 라운드 종료
@@ -239,8 +259,17 @@ class Round:
         winner_bets = [entry for entry in self.bet_history if entry[0] == self.winner.name]
         if not winner_bets:
             return
-        _, cards, num_sum, special_effect = winner_bets[-1]
-        self.winner.total_points += num_sum
+        # 승리 라운드의 마지막 배팅 항목을 가져와 unpack
+        _, cards, value, special_effect = winner_bets[-1]
+        # 카드들의 숫자 값만 합산하여 기본 점수 계산
+        base_score = sum(card.numeric_value() for card in cards if card.numeric_value() is not None)
+        ace_count = sum(1 for card in cards if not card.is_special() and card.rank == "1")
+        ace_bonus = ace_count * 4
+        total_score = base_score + ace_bonus
+        if special_effect == 'K' :
+            total_score += 5
+        # 승리자에게 점수 부여
+        self.winner.total_points += total_score
         # 승리자의 제출 카드 중, 숫자 카드와 k 카드는 점수 카드로 획득
         score_cards_to_add = []
         for card in cards:
@@ -249,18 +278,8 @@ class Round:
             elif card.is_special() and card.rank.lower() == "k":
                 score_cards_to_add.append(card)
         self.winner.score_cards.extend(score_cards_to_add)
-        # 다른 카드들은 덱으로 돌려보냅니다.
-        returned_cards = []
-        for entry in self.bet_history:
-            if entry[0] != self.winner.name:
-                returned_cards.extend(entry[1])
-            else:
-                # 승리 플레이어의 배팅 내역 중 점수 카드로 사용된 카드들은 제외하고 나머지(특수 카드 j, q, joker 등)는 반환
-                for card in entry[1]:
-                    if card.is_special() and card.rank.lower() != "k":
-                        returned_cards.append(card)
-        self.deck.add_cards(returned_cards)
-        self.winner.draw_to_handcount(self.deck)
+        for p in self.players:
+            p.draw_to_handcount(self.deck)
 
 class Game:
     def __init__(self):

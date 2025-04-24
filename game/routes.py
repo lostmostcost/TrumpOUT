@@ -1,10 +1,8 @@
-# routes.py
-from flask import render_template, request, session, redirect, url_for, jsonify
-from flask_socketio import emit
-from models import Player, PLAYER_COUNT, MULLIGAN_COUNT, HAND_COUNT, game
+from flask import render_template, request, session, redirect, url_for
+from flask_socketio import emit, join_room
+from models import Player, PLAYER_COUNT, MULLIGAN_COUNT, HAND_COUNT, FIRST_PLAYER_THRESHOLD, Game, game
 
 def error_response(message):
-    # 에러의 경우 HTML 템플릿 대신 간단한 문자열 HTML을 반환합니다.
     return f'''
     <!DOCTYPE html>
     <html lang="ko">
@@ -19,63 +17,100 @@ def error_response(message):
     </html>
     '''
 
-# 전역 변수 (J 카드 효과 대상 공개 저장)
-revealed_hands = {}
+# Error flash mechanism for game screen
+def flash_error(msg):
+    """Store a one‑shot error message to be sent with next socket payload."""
+    session['error_message'] = msg
+
+# key: player name -> {'pending': bool, 'cards': [html_str, ...]}
+mulligan_info = {}
+
+# J 사용 후 대상/버리기 미완료인 플레이어 목록
+j_pending = {}
+
+info_message = None  # last one-shot broadcast message (e.g., J discard)
 
 def register_routes(app, socketio):
-    def get_current_game_state():
-        if game.current_round:
-            bet_history_serialized = []
-            for entry in game.current_round.bet_history[::-1]:
-                player_name, cards, num_sum, special_effect = entry
-                bet_history_serialized.append((player_name, [str(app.jinja_env.globals['card_to_html'](c)) for c in cards], num_sum))
-            
-            # 턴 진행 순서 계산
-            n = len(game.current_round.players)
-            turn_order = []
-            start = game.current_round.first_player_index
-            for i in range(n):
-                turn_order.append(game.current_round.players[(start + i) % n].name)
-            
-            state = {
-                "first_player": game.current_round.players[game.current_round.first_player_index].name,
-                "current_turn": game.current_round.players[game.current_round.current_turn_index].name,
-                "turn_order": turn_order,
-                "current_highest": game.current_round.current_highest,
-                "bet_history": bet_history_serialized,
-                "players": {p.name: {
-                    "남은 패": len(p.hand),
-                    "누적 승점": p.total_points,
-                    "선플레이어 횟수": p.starting_count,
-                    "행동": p.last_action,
-                    "score_cards": [str(app.jinja_env.globals['card_to_html'](c)) for c in p.score_cards]
-                } for p in game.players},
-                "pending_j": session.get("pending_j", False),
-                "round_over": False
-            }
-            
-            # 현재 플레이어의 손패도 HTML 리스트로 준비 (옵션)
-            current_player_name = session.get("player_name")
-            my_hand = []
-            if current_player_name:
-                player_obj = next((p for p in game.players if p.name == current_player_name), None)
-                if player_obj:
-                    for i, card in enumerate(player_obj.hand):
-                        item = f"<li><label><input type='checkbox' name='card_indices' value='{i}'> {app.jinja_env.globals['card_to_html'](card)}</label></li>"
-                        my_hand.append(item)
-            state["my_hand"] = my_hand
-            
-        else:
-            state = {
+    def get_state_for(player_name):
+        """특정 플레이어에게만 전송할 게임 상태 생성"""
+        # 현재 라운드가 없으면 기본 메시지
+        if not game.current_round:
+            return {
                 "message": "라운드가 종료되었습니다.",
                 "players": [p.name for p in game.players],
-                "round_over": True if game.round_history else False
             }
-        return state
+        # 숫자 데이터들
+        recent_bets = [
+            {
+                "player": name,
+                "value": value,
+                "cards": [str(app.jinja_env.globals['card_to_html'](c)) for c in cards]
+            }
+            for name, cards, value, _ in game.current_round.bet_history[::-1]
+        ]
+        graph_data = [
+            {"value": value, "reversed": (effect == "reversed")}
+            for name, cards, value, effect in game.current_round.bet_history[::-1]
+        ]
+        # 해당 플레이어 손패만 포함
+        hand = []
+        player_obj = next((p for p in game.players if p.name == player_name), None)
+        if player_obj:
+            hand = [str(app.jinja_env.globals['card_to_html'](c)) for c in player_obj.hand]
+
+        # 턴 순서 생성
+        turn_order = []
+        n = len(game.current_round.players)
+        start = game.current_round.first_player_index
+        for i in range(n):
+            turn_order.append(game.current_round.players[(start + i) % n].name)
+
+        # 다른 플레이어 정보
+        players = {
+            p.name: {
+                "남은 패": len(p.hand),
+                "누적 승점": p.total_points,
+                "행동": p.last_action,
+                "score_cards": [str(app.jinja_env.globals['card_to_html'](c)) for c in p.score_cards]
+            }
+            for p in game.players
+        }
+
+        return {
+            "first_player": game.current_round.players[start].name,
+            "current_turn": game.current_round.players[game.current_round.current_turn_index].name,
+            "turn_order": turn_order,
+            "recent_bets": recent_bets,
+            "graph_data": graph_data,
+            "total_rounds":     FIRST_PLAYER_THRESHOLD * len(game.players),
+            "completed_rounds":  len(game.round_history),
+            "remaining_rounds": FIRST_PLAYER_THRESHOLD * len(game.players) - sum(p.starting_count for p in game.players),
+            "players": players,
+            "pending_j": j_pending.get(player_name, False),
+            "hand": hand,
+            "mulligan_cards": mulligan_info.get(player_name, {}).get('cards') if mulligan_info.get(player_name, {}).get('pending') else None,
+            "j_candidates": (j_pending.get(player_name, False) and 'j_target_hand' not in session)
+                            and [p.name for p in game.players if p.name != player_name] or None,
+            "j_target_hand": session.get('j_target_hand') if 'j_target' in session else None,
+            "j_target": session.get('j_target') if session.get('j_target') else None,
+            # 오류 메시지는 요청을 발생시킨 플레이어(세션의 player_name)에게만 전달
+            "error_message": session.get("error_message") if player_name == session.get("player_name") else None,
+            "game_over": game.game_over,
+            "info_message": info_message,
+        }
 
     def broadcast_game_state():
-        state = get_current_game_state()
-        socketio.emit('game_state_update', state)
+    # 각 플레이어 방(room)으로 전송
+        for p in game.players:
+            socketio.emit('game_state_update', get_state_for(p.name), room=p.name)
+        # 게임 종료시 별도 이벤트 broadcast
+        if game.game_over:
+            for p in game.players:
+                socketio.emit('game_over', {}, room=p.name)
+        # 오류 메세지는 1회 표시 후 제거
+        session.pop("error_message", None)
+        global info_message
+        info_message = None
 
     @app.route('/join', methods=['GET', 'POST'])
     def join():
@@ -114,43 +149,7 @@ def register_routes(app, socketio):
         if game.current_round is None:
             game.start_round()
             broadcast_game_state()
-        cur_round = game.current_round
-        current_turn = cur_round.players[cur_round.current_turn_index].name
-        turn_order = []
-        n = len(cur_round.players)
-        start = cur_round.first_player_index
-        for i in range(n):
-            turn_order.append(cur_round.players[(start + i) % n].name)
-        my_turn = (player_name == current_turn)
-        player = next((p for p in game.players if p.name == player_name), None)
-        player_status = []
-        for p in game.players:
-            player_status.append({
-                "이름": p.name,
-                "남은 패": len(p.hand),
-                "누적 승점": p.total_points,
-                "선플레이어 횟수": p.starting_count,
-                "행동": p.last_action,
-                "score_cards": [app.jinja_env.globals['card_to_html'](c) for c in p.score_cards]
-            })
-        
-        return render_template("main.html",
-                            game_over=False,
-                            player_name=player_name,
-                            first_player=cur_round.players[cur_round.first_player_index].name,
-                            hand_count=len(player.hand),
-                            hand=player.hand,
-                            score_cards=player.score_cards,
-                            total_points=player.total_points,
-                            bet_history=[(entry[0], [app.jinja_env.globals['card_to_html'](c) for c in entry[1]], entry[2])
-                                            for entry in cur_round.bet_history[::-1]],
-                            my_turn=my_turn,
-                            round_history=game.round_history,
-                            turn_order=turn_order,
-                            current_turn=current_turn,
-                            final_scores={},
-                            player_status=player_status,
-                            pending_j=session.get("pending_j", False))
+        return render_template("main.html", player_name=player_name, game_over=False, pending_j=session.get("pending_j", False))
 
     @app.route('/action', methods=['POST'])
     def action():
@@ -163,101 +162,115 @@ def register_routes(app, socketio):
         cur_round = game.current_round
         current_turn = cur_round.players[cur_round.current_turn_index].name
         if player.name != current_turn:
-            return error_response("아직 당신의 차례가 아닙니다.")
+            flash_error("아직 당신의 차례가 아닙니다.")
+            broadcast_game_state()
+            return ('', 204)
+        
         action_type = request.form.get("action_type")
         if action_type == "raise":
             indices = request.form.getlist("card_indices")
             try:
                 indices = [int(x) for x in indices]
             except ValueError:
-                return error_response("유효한 카드 인덱스가 아닙니다.")
-            target = request.form.get("target")
-            if target:
-                target = target.strip()
-            else:
-                target = None
-            success, message = cur_round.player_raise(player, indices, target_player=target)
+                flash_error("유효한 카드 인덱스가 아닙니다.")
+                broadcast_game_state()
+                return ('', 204)
+            success, message = cur_round.player_raise(player, indices)
             if not success:
-                return error_response(message)
+                flash_error(message)
+                broadcast_game_state()
+                return ('', 204)
+            if cur_round.bet_history[-1][3] == "J":
+                # J 효과 대기 상태 등록
+                j_pending[player.name] = True
+                broadcast_game_state()
+                return ('', 204)
         elif action_type == "fold":
+            # If eligible for mulligan
             if not player.has_raised and not player.mulligan_used:
-                return redirect(url_for('mulligan'))
+                new_cards = game.deck.draw(MULLIGAN_COUNT)
+                player.hand.extend(new_cards)
+                mulligan_info[player.name] = {
+                    'pending': True,
+                    'cards': [str(app.jinja_env.globals['card_to_html'](c)) for c in new_cards]
+                }
+                broadcast_game_state()
+                return ('', 204)   # no full-page reload; updates via SocketIO
+            # Otherwise perform fold
+            success, message = cur_round.player_fold(player)
+            if not success:
+                flash_error(message)
+                broadcast_game_state()
+                return ('', 204)
+        elif action_type == 'mulligan_discard':
+            indices = request.form.getlist('discard_indices')
+            indices = sorted([int(x) for x in indices], reverse=True)
+            if len(indices) != MULLIGAN_COUNT:
+                flash_error(f"{MULLIGAN_COUNT}장을 정확히 선택해야 합니다.")
+                broadcast_game_state()
+                return ('', 204)
+            for idx in indices:
+                try:
+                    player.hand.pop(idx)
+                except IndexError:
+                    flash_error("잘못된 카드 인덱스입니다.")
+                    broadcast_game_state()
+                    return ('', 204)
+            player.mulligan_used = True
+            player.last_action = "멀리건"
+            mulligan_info.pop(player.name, None)   # clear
+            cur_round = game.current_round
+            cur_round.player_fold(player)          # 라운드 이탈 취급
+            if cur_round.check_round_over():
+                game.end_round()
             else:
-                success, message = cur_round.player_fold(player)
-                if not success:
-                    return error_response(message)
+                cur_round.next_player()
+            broadcast_game_state()
+            return ('', 204)
+        elif action_type == 'j_select':
+            target = request.form.get('target')
+            if not target:
+                flash_error("유효한 대상을 선택해주세요.")
+                broadcast_game_state()
+                return ('', 204)
+            # store hand HTML for selected target
+            target_player = next(p for p in game.players if p.name == target)
+            session['j_target'] = target
+            session['j_target_hand'] = [str(app.jinja_env.globals['card_to_html'](c)) for c in target_player.hand]
+            broadcast_game_state()
+            return ('', 204)
+
+        elif action_type == 'j_discard':
+            indices = request.form.getlist('discard_indices')
+            indices = [int(x) for x in indices]
+            target_name = session.pop('j_target')
+            target_player = next(p for p in game.players if p.name == target_name)
+            for idx in sorted(indices, reverse=True):
+                card_html = str(app.jinja_env.globals['card_to_html'](target_player.hand[idx]))
+                target_player.hand.pop(idx)
+            session.pop('j_target_hand', None)
+            j_pending.pop(player_name, None)
+            # broadcast info message to everyone
+            global info_message
+            info_message = f"{player_name} ▶ {target_name} 의 {card_html} 를 버렸습니다."
+            # advance turn
+            cur_round = game.current_round
+            if cur_round.check_round_over():
+                game.end_round()
+            else:
+                cur_round.next_player()
+            broadcast_game_state()
+            return ('', 204)
         else:
-            return error_response("알 수 없는 행동입니다.")
+            flash_error("알 수 없는 행동입니다.")
+            broadcast_game_state()
+            return ('', 204)
         if cur_round.check_round_over():
             game.end_round()
         else:
             cur_round.next_player()
         broadcast_game_state()
         return redirect(url_for('index'))
-
-    @app.route('/mulligan', methods=['GET', 'POST'])
-    def mulligan():
-        if 'player_name' not in session:
-            return redirect(url_for('join'))
-        player_name = session['player_name']
-        player = next((p for p in game.players if p.name == player_name), None)
-        cur_round = game.current_round
-        if request.method == 'POST':
-            selected = request.form.getlist("discard_indices")
-            try:
-                discard_indices = [int(x) for x in selected]
-            except ValueError:
-                return error_response("유효한 카드 인덱스가 아닙니다.")
-            if len(discard_indices) != MULLIGAN_COUNT:
-                return error_response(f"정확히 {MULLIGAN_COUNT}장의 카드를 선택해야 합니다.")
-            for index in sorted(discard_indices, reverse=True):
-                try:
-                    player.hand.pop(index)
-                except IndexError:
-                    return error_response("잘못된 카드 인덱스입니다.")
-            if cur_round and player.name in cur_round.active_players:
-                del cur_round.active_players[player.name]
-            player.mulligan_used = True
-            player.last_action = "멀리건(자동 폴드)"
-            if cur_round.check_round_over():
-                game.end_round()
-            else:
-                cur_round.next_player()
-            broadcast_game_state()
-            return redirect(url_for('index'))
-        else:
-            new_cards = game.deck.draw(MULLIGAN_COUNT)
-            player.hand.extend(new_cards)
-            total_cards = HAND_COUNT + MULLIGAN_COUNT
-            return render_template("mulligan.html", hand=player.hand, mulligan_count=MULLIGAN_COUNT, total_cards=total_cards)
-
-    @app.route('/j_select', methods=['GET', 'POST'])
-    def j_select():
-        if 'player_name' not in session:
-            return redirect(url_for('join'))
-        current_player = session['player_name']
-        candidate_names = [p.name for p in game.players if p.name != current_player]
-        if request.method == 'POST':
-            target = request.form.get('target')
-            if not target or target not in candidate_names:
-                return error_response("유효한 대상을 선택해주세요.")
-            target_player = next((p for p in game.players if p.name == target), None)
-            if target_player:
-                revealed_hands[current_player] = (target, [str(app.jinja_env.globals['card_to_html'](c)) for c in target_player.hand])
-            session.pop("pending_j", None)
-            return redirect(url_for('j_view'))
-        return render_template("j_select.html", candidates=candidate_names)
-
-    @app.route('/j_view')
-    def j_view():
-        if 'player_name' not in session:
-            return redirect(url_for('join'))
-        current_player = session['player_name']
-        target_info = revealed_hands.get(current_player)
-        if not target_info:
-            return error_response("J 카드 효과로 공개된 대상이 없습니다.")
-        target_name, hand_html_list = target_info
-        return render_template("j_view.html", target_name=target_name, hand=hand_html_list)
 
     @app.route('/logout')
     def logout():
@@ -266,18 +279,18 @@ def register_routes(app, socketio):
 
     @app.route('/reset')
     def reset():
-        global game, revealed_hands
-        from models import Game  # 재생성을 위해 모델에서 Game 클래스를 불러옴
+        global game, mulligan_info, j_pending
         game = Game()
-        revealed_hands = {}
+        mulligan_info = {}
+        j_pending = {}
         session.clear()
         broadcast_game_state()
         return redirect(url_for('join'))
 
-    @app.route('/game_state')
-    def game_state():
-        return jsonify(get_current_game_state())
-
     @socketio.on('connect')
     def handle_connect():
-        emit('game_state_update', get_current_game_state())
+        player = session.get('player_name')
+        if player:
+            join_room(player)
+            # 연결 직후 한 번 전송
+            emit('game_state_update', get_state_for(player), room=player)
