@@ -4,9 +4,9 @@ import random
 # 밸런스 조정용 변수들
 PLAYER_COUNT = 3         # 참여 플레이어 수
 HAND_COUNT = 6            # 초기 패의 장수
-MULLIGAN_COUNT = 6        # 멀리건 시 추가로 뽑는 카드 장수
+MULLIGAN_COUNT = 4        # 멀리건 시 추가로 뽑는 카드 장수
 MAX_CARDS_PER_PLAY = 2     # 한 번에 낼 수 있는 숫자 카드 최대 장수
-FIRST_PLAYER_THRESHOLD = 5 # 각 플레이어가 선플레이어한 횟수가 이 수치를 넘으면 게임 종료
+FIRST_PLAYER_THRESHOLD = 3 # 각 플레이어가 선플레이어한 횟수가 이 수치를 넘으면 게임 종료
 
 def card_to_html(card):
     """Card 객체를 기호와 색상으로 표시하는 HTML 문자열 반환"""

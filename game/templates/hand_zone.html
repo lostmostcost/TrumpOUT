@@ -68,43 +68,44 @@ function updateHand(data) {
       const form = new FormData();
       form.append('action_type', 'mulligan_discard');
       selected.forEach(idx => form.append('discard_indices', idx));
-      fetch(actionUrl, { method: 'POST', body: form }).then(() => window.location.reload());
+      fetch(actionUrl, { method: 'POST', body: form });
     };
     buttons.appendChild(discardBtn);
-    return;
   }
-
-  // Normal play
-  (data.hand || []).forEach((cardHtml, i) => {
-    const el = document.createElement('div');
-    el.className = 'card-item';
-    el.innerHTML = cardHtml;
-    el.dataset.index = i;
-    el.addEventListener('click', () => el.classList.toggle('selected'));
-    container.appendChild(el);
-  });
-  const raiseBtn = document.createElement('button');
-  raiseBtn.textContent = '배팅 (Raise)';
-  raiseBtn.onclick = () => {
-    const cards = Array.from(container.querySelectorAll('.selected')).map(e => e.dataset.index);
-    const form = new FormData();
-    form.append('action_type', 'raise');
-    cards.forEach(idx => form.append('card_indices', idx));
-    fetch(actionUrl, { method: 'POST', body: form });
-  };
-  const foldBtn = document.createElement('button');
-  foldBtn.textContent = '폴드 (Fold)';
-  if (data.pending_j || data.j_target_hand) {
-    foldBtn.disabled = true;           // Disable fold during J effect
-    raiseBtn.disabled = true;
+  
+  else{
+    // Normal play
+    (data.hand || []).forEach((cardHtml, i) => {
+      const el = document.createElement('div');
+      el.className = 'card-item';
+      el.innerHTML = cardHtml;
+      el.dataset.index = i;
+      el.addEventListener('click', () => el.classList.toggle('selected'));
+      container.appendChild(el);
+    });
+    const raiseBtn = document.createElement('button');
+    raiseBtn.textContent = '배팅 (Raise)';
+    raiseBtn.onclick = () => {
+      const cards = Array.from(container.querySelectorAll('.selected')).map(e => e.dataset.index);
+      const form = new FormData();
+      form.append('action_type', 'raise');
+      cards.forEach(idx => form.append('card_indices', idx));
+      fetch(actionUrl, { method: 'POST', body: form });
+    };
+    const foldBtn = document.createElement('button');
+    foldBtn.textContent = '폴드 (Fold)';
+    if (data.pending_j || data.j_target_hand) {
+      foldBtn.disabled = true;           // Disable fold during J effect
+      raiseBtn.disabled = true;
+    }
+    foldBtn.onclick = () => {
+      const form = new FormData();
+      form.append('action_type', 'fold');
+      fetch(actionUrl, { method: 'POST', body: form });
+    };
+    buttons.appendChild(raiseBtn);
+    buttons.appendChild(foldBtn);
   }
-  foldBtn.onclick = () => {
-    const form = new FormData();
-    form.append('action_type', 'fold');
-    fetch(actionUrl, { method: 'POST', body: form });
-  };
-  buttons.appendChild(raiseBtn);
-  buttons.appendChild(foldBtn);
 }
 </script>
 {% endmacro %}

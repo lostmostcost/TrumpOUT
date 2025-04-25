@@ -219,14 +219,12 @@ def register_routes(app, socketio):
             player.mulligan_used = True
             player.last_action = "멀리건"
             mulligan_info.pop(player.name, None)   # clear
-            cur_round = game.current_round
-            cur_round.player_fold(player)          # 라운드 이탈 취급
-            if cur_round.check_round_over():
-                game.end_round()
-            else:
-                cur_round.next_player()
-            broadcast_game_state()
-            return ('', 204)
+            success, message = cur_round.player_fold(player)
+            if not success:
+                flash_error(message)
+                broadcast_game_state()
+                return ('', 204)
+            
         elif action_type == 'j_select':
             target = request.form.get('target')
             if not target:
@@ -253,14 +251,6 @@ def register_routes(app, socketio):
             # broadcast info message to everyone
             global info_message
             info_message = f"{player_name} ▶ {target_name} 의 {card_html} 를 버렸습니다."
-            # advance turn
-            cur_round = game.current_round
-            if cur_round.check_round_over():
-                game.end_round()
-            else:
-                cur_round.next_player()
-            broadcast_game_state()
-            return ('', 204)
         else:
             flash_error("알 수 없는 행동입니다.")
             broadcast_game_state()
