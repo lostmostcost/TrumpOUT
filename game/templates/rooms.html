@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>TrumpOUT Lobby</title>
+  <style>
+    body{margin:0;font-family:"Segoe UI",sans-serif;background:#fafafa}
+    .wrapper{display:flex;height:100vh}
+    /* left : room list */
+    .room-list{flex:1 1 60%;padding:24px;overflow-y:auto;border-right:2px solid #ddd}
+    .room{padding:12px 16px;margin-bottom:12px;border:1px solid #ccc;border-radius:8px;background:#fff;display:flex;justify-content:space-between;align-items:center}
+    .room-title{font-weight:600}
+    .room-meta{font-size:14px;color:#555}
+    .btn{cursor:pointer;border:none;border-radius:6px;padding:8px 14px;font-weight:600;background:#2196f3;color:#fff;transition:background 0.2s}
+    .btn:hover{background:#1976d2}
+    /* right : create panel */
+    .create-panel{flex:1 1 40%;background:#fff;height:100%;padding:24px;box-shadow:-2px 0 6px rgba(0,0,0,0.1);transform:translateX(100%);transition:transform 0.3s ease}
+    .create-panel.show{transform:translateX(0)}
+    .field{display:flex;flex-direction:column;margin-bottom:12px}
+    label{font-weight:600;margin-bottom:4px}
+    input[type="text"],input[type="number"]{padding:6px 10px;border:1px solid #bbb;border-radius:4px;font-size:15px}
+    .inline {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <!-- Left : room list -->
+    <div class="room-list">
+      <h2 style="margin-top:0">공개 게임 목록</h2>
+      {% if rooms %}
+        {% for rid,info in rooms.items() %}
+          <div class="room">
+            <div>
+              <div class="room-title">{{ info.config.title }}</div>
+              <div class="room-meta">인원 {{ info.joiners|length }}/{{ info.config.player_count }}</div>
+            </div>
+            <form method="GET" action="/join/{{ rid }}">
+              <button class="btn">입장</button>
+            </form>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p>아직 공개 게임이 없습니다.</p>
+      {% endif %}
+      <button id="openCreate" class="btn" style="margin-top:16px">새 방 만들기</button>
+    </div>
+
+    <!-- Right : create panel (hidden by default) -->
+    <div id="createPanel" class="create-panel">
+      <h2>새 방 만들기</h2>
+      <form method="POST" action="/create" style="margin-top:16px; display: flex; flex-direction: column; gap: 12px;">
+        <div class="field"><label>방 제목</label><input name="title" type="text" required></div>
+
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <label for="private" style="min-width: 60px;">비공개</label>
+          <input type="checkbox" name="private" id="private" style="width: 18px; height: 18px; cursor: pointer;">
+        </div>
+
+        <div class="field"><label>닉네임</label><input name="host_name" type="text" required></div>
+
+        <div class="field"><label>최대 인원</label><input name="player_count" type="number" min="2" max="8" value="4" required style="width:90px"></div>
+
+        <div class="field">
+          <label>선 플레이어 횟수</label>
+          <input id="firstThreshold" name="first_player_threshold" type="number" min="1" max="10" value="3" required style="width:90px">
+          <small id="roundInfo" style="color:#555;margin-top:4px;display:block">총 라운드: 12</small>
+        </div>
+
+        <button type="button" id="toggleAdv" class="btn" style="background: #d5dee8;;margin-top:6px">고급 설정</button>
+
+        <div id="advSettings" style="display:none;gap:16px;flex-wrap:wrap" class="inline">
+          <div class="field"><label>패</label><input name="hand_count" type="number" min="3" max="10" value="6" required style="width:90px"></div>
+          <div class="field"><label>멀리건</label><input name="mulligan_count" type="number" min="1" max="6" value="4" required style="width:90px"></div>
+          <div class="field"><label>숫자 카드 한도</label><input name="max_cards_per_play" type="number" min="1" max="5" value="2" required style="width:90px"></div>
+        </div>
+
+        <button class="btn" style="margin-top:12px;width:100%">방 만들기</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    const btn = document.getElementById('openCreate');
+    const panel = document.getElementById('createPanel');
+    btn.addEventListener('click', ()=> panel.classList.toggle('show'));
+
+    // 고급 설정 토글
+    const advBtn = document.getElementById('toggleAdv');
+    const advDiv = document.getElementById('advSettings');
+    advBtn.addEventListener('click', () =>{
+      advDiv.style.display = advDiv.style.display === 'none' ? 'flex' : 'none';
+    });
+
+    // 라운드 수 동적 표시
+    const playerCountInput = document.querySelector('input[name="player_count"]');
+    const firstInput = document.getElementById('firstThreshold');
+    const roundInfo = document.getElementById('roundInfo');
+    function updateRounds(){
+      const pc = parseInt(playerCountInput.value||0);
+      const ft = parseInt(firstInput.value||0);
+      if(pc>0 && ft>0){
+        roundInfo.textContent = `총 라운드: ${pc*ft}`;
+      }
+    }
+    playerCountInput.addEventListener('input', updateRounds);
+    firstInput.addEventListener('input', updateRounds);
+    updateRounds();
+  </script>
+</body>
+</html>

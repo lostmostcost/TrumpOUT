@@ -8,8 +8,14 @@
     var wasPendingJ = false;
     var reloadedOnRoundOver = false;
     var socket = io();
+    // 현재 방 ID (lobby 복귀에 사용)
+    var roomId = "{{ session['room_id'] if session.get('room_id') else '' }}";
     socket.on('connect', function() {
       console.log('서버와 연결되었습니다.');
+      // 게임 화면에서도 room-wide 채널에 가입해야 lobby_restart 이벤트 수신 가능
+      if(roomId){
+        socket.emit('join_lobby', {room: roomId});
+      }
     });
     socket.on('game_state_update', function(data) {
       // 사이드바, 핸드, 대시보드 동시 업데이트
@@ -20,6 +26,12 @@
     socket.on('game_over', function() {
       // 모든 플레이어가 즉시 결과 화면으로 이동
       window.location.reload();
+    });
+    // 게임이 중단되어 로비로 복귀하라는 서버 지시
+    socket.on('lobby_restart', function(data) {
+      if (data.room === roomId) {
+        window.location.href = '/lobby/' + data.room;
+      }
     });
   </script>
   <style>
@@ -41,14 +53,35 @@
   {% from "hand_zone.html" import hand_zone %}
 
   {% if game_over %}
-    <h2>게임 종료</h2>
-    <p>최종 점수:</p>
-    <ul>
+    <h2 style="color:#2196f3">게임 종료</h2>
+    <table style="border-collapse:collapse;margin:16px 0;width:60%;max-width:420px">
+      <thead>
+        <tr style="background:#f0f8ff">
+          <th style="padding:8px 12px;border:1px solid #ccc">플레이어</th>
+          <th style="padding:8px 12px;border:1px solid #ccc">점수</th>
+        </tr>
+      </thead>
+      <tbody>
       {% for name, score in final_scores.items() %}
-        <li>{{ name }}: {{ score }}</li>
+        <tr>
+          <td style="padding:8px 12px;border:1px solid #ccc">{{ name }}</td>
+          <td style="padding:8px 12px;border:1px solid #ccc">{{ score }}</td>
+        </tr>
       {% endfor %}
-    </ul>
-    <br><a href="/reset">게임 초기화</a>
+      </tbody>
+    </table>
+
+    <div style="display:flex;gap:20px;justify-content:center;margin-top:20px">
+      <!-- leave room -->
+      <form method="GET" action="/logout">
+        <button class="btn-leave" style="cursor:pointer;padding:10px 20px;font-weight:bold;border:none;border-radius:6px;background:#e74c3c;color:#fff">나가기</button>
+      </form>
+
+      <!-- stay & start new game : simply return to lobby -->
+      <form method="GET" action="/lobby/{{ session['room_id'] }}">
+        <button class="btn-restart" style="cursor:pointer;padding:10px 20px;font-weight:bold;border:none;border-radius:6px;background:#2ecc71;color:#fff">새 게임</button>
+      </form>
+    </div>
 
   {% else %}
     <div class="container">
@@ -63,10 +96,12 @@
     {{ hand_zone() }}
   {% endif %}
 
+  {% if not game_over %}
   <br>
   <form method="GET" action="/logout">
     <button type="submit">나가기</button>
   </form>
+  {% endif %}
   <div id="gameState" style="display: none;"></div>
 </body>
 </html>

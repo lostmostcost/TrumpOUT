@@ -1,12 +1,17 @@
 from flask import session
 import random
+from dataclasses import dataclass
+import uuid
 
-# 밸런스 조정용 변수들
-PLAYER_COUNT = 3         # 참여 플레이어 수
-HAND_COUNT = 6            # 초기 패의 장수
-MULLIGAN_COUNT = 4        # 멀리건 시 추가로 뽑는 카드 장수
-MAX_CARDS_PER_PLAY = 2     # 한 번에 낼 수 있는 숫자 카드 최대 장수
-FIRST_PLAYER_THRESHOLD = 3 # 각 플레이어가 선플레이어한 횟수가 이 수치를 넘으면 게임 종료
+@dataclass
+class GameConfig:
+    title: str                    = "Trump OUT Room"
+    private: bool                 = False
+    player_count: int             = 4
+    hand_count: int               = 6
+    mulligan_count: int           = 4
+    max_cards_per_play: int       = 2
+    first_player_threshold: int   = 5
 
 def card_to_html(card):
     """Card 객체를 기호와 색상으로 표시하는 HTML 문자열 반환"""
@@ -60,7 +65,8 @@ class Card:
         return None
     
 class Deck:
-    def __init__(self):
+    def __init__(self, game=None):
+        self.game = game
         self.cards = []
         self._build_full_deck()
         random.shuffle(self.cards)
@@ -116,15 +122,17 @@ class Deck:
     def draw(self, n=1):
         drawn = []
         for _ in range(n):
-            if len(self.cards) < 1:
-                self.refresh_deck(game)
+            if len(self.cards) < 1 and self.game:
+                self.refresh_deck(self.game)
                 if len(self.cards) < 1:
                     break
             drawn.append(self.cards.pop())
         return drawn
 class Player:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, name: str, pid: str | None = None):
+        # Unique identifier independent of display name
+        self.id: str = pid or str(uuid.uuid4())
+        self.name: str = name
         self.hand = []              
         self.score_cards = []       
         self.total_points = 0
@@ -135,22 +143,24 @@ class Player:
         self.mulligan_used = False  
         self.last_action = "대기"
 
-    def draw_to_handcount(self, deck):
-        while len(self.hand) < HAND_COUNT:
+    def draw_to_handcount(self, deck, hand_count):
+        while len(self.hand) < hand_count:
             new_cards = deck.draw(1)
             if not new_cards:
                 break
             self.hand.extend(new_cards)
 
 class Round:
-    def __init__(self, players, deck, first_player_index):
+    def __init__(self, players, deck, first_player_index, cfg):
+        self.cfg = cfg
         self.players = players
         self.deck = deck
         self.first_player_index = first_player_index
         self.current_turn_index = first_player_index
         self.current_highest = 0
         self.bet_history = []  # (플레이어 이름, [Card, ...], 숫자 합, 특수 효과)
-        self.active_players = {p.name: p for p in players}
+        # Use player.id as key to avoid name collision across games
+        self.active_players = {p.id: p for p in players}
         self.round_over = False
         self.winner = None
         self.reversed = False
@@ -160,7 +170,7 @@ class Round:
         for _ in range(n):
             self.current_turn_index = (self.current_turn_index + 1) % n
             cur = self.players[self.current_turn_index]
-            if cur.name in self.active_players:
+            if cur.id in self.active_players:
                 return cur
         return None
 
@@ -176,9 +186,9 @@ class Round:
         numeric_cards = [card for card in selected_cards if not card.is_special()]
         if len(special_cards) > 1:
             return False, "한 번에 특수 카드는 최대 1장만 사용할 수 있습니다."
-        allowed = MAX_CARDS_PER_PLAY if not special_cards else MAX_CARDS_PER_PLAY + 1
+        allowed = self.cfg.max_cards_per_play if not special_cards else self.cfg.max_cards_per_play + 1
         if len(selected_cards) > allowed:
-            return False, f"한 번에 낼 수 있는 전체 카드 수는 숫자 카드 {MAX_CARDS_PER_PLAY}장, 특수 카드 1장 입니다."
+            return False, f"한 번에 낼 수 있는 전체 카드 수는 숫자 카드 {self.cfg.max_cards_per_play}장, 특수 카드 1장 입니다."
         if special_cards and not numeric_cards:
             return False, "특수 카드는 반드시 숫자 카드와 함께 제출해야 합니다."
         
@@ -229,10 +239,21 @@ class Round:
         return True, "raise 제출 완료."
 
     def player_fold(self, player):
-        if player.name in self.active_players:
-            del self.active_players[player.name]
+        if player.id in self.active_players:
+            del self.active_players[player.id]
         player.last_action = "폴드"
         return True, "fold 처리 완료."
+
+    # ---- called when player leaves room mid‑round ------------------
+    def remove_player(self, player):
+        """Remove player from active tracking (e.g., left the game)."""
+        # pop from active set
+        self.active_players.pop(player.id, None)
+        # also delete from players list to keep turn order sane
+        self.players = [p for p in self.players if p.id != player.id]
+        # adjust current_turn_index if needed
+        if self.current_turn_index >= len(self.players):
+            self.current_turn_index = 0
 
     def check_round_over(self):
         # active_players가 0이면 라운드 종료
@@ -278,27 +299,39 @@ class Round:
             elif card.is_special() and card.rank.lower() == "k":
                 score_cards_to_add.append(card)
         self.winner.score_cards.extend(score_cards_to_add)
+        # 라운드 종료 후 모든 플레이어 패를 지정된 hand_count 까지 보충
         for p in self.players:
-            p.draw_to_handcount(self.deck)
+            p.draw_to_handcount(self.deck, self.cfg.hand_count)
 
 class Game:
-    def __init__(self):
-        self.deck = Deck()
+    def __init__(self, cfg: GameConfig | None = None, room_id: str | None = None):
+        self.cfg = cfg or GameConfig()
+        self.room_id = room_id  
+        self.deck = Deck(self)
         self.players = []
         self.current_round = None
         self.first_player_index = None
         self.round_history = []
         self.game_over = False
+        # per‑game transient state
+        self.j_pending: dict[str, bool] = {}          # player_name -> True/False
+        self.mulligan_info: dict[str, dict] = {}      # player_name -> {'pending': bool, 'cards': [...]}
+        self.info_message: str | None = None          # one‑shot broadcast message
+        self.aborted = False     # True if game stopped because of insufficient players
 
-    def add_player(self, player):
-        if len(self.players) >= PLAYER_COUNT:
+    def add_player(self, player: "Player"):
+        # Reject if room is full
+        if len(self.players) >= self.cfg.player_count:
+            return False
+        # Reject if another player already has the same display name
+        if any(p.name == player.name for p in self.players):
             return False
         self.players.append(player)
         return True
 
     def start_round(self):
         for player in self.players:
-            player.draw_to_handcount(self.deck)
+            player.draw_to_handcount(self.deck, self.cfg.hand_count)
             player.current_bet_cards = []
             player.in_round = True
             player.has_raised = False
@@ -308,7 +341,7 @@ class Game:
             self.first_player_index = random.randint(0, len(self.players)-1)
         starting_player = self.players[self.first_player_index]
         starting_player.starting_count += 1
-        self.current_round = Round(self.players, self.deck, self.first_player_index)
+        self.current_round = Round(self.players, self.deck, self.first_player_index, self.cfg)
         return self.current_round
 
     def end_round(self):
@@ -320,7 +353,22 @@ class Game:
             })
             self.first_player_index = (self.first_player_index + 1) % len(self.players)
             self.current_round = None
-            if all(p.starting_count >= FIRST_PLAYER_THRESHOLD for p in self.players):
+            if all(p.starting_count >= self.cfg.first_player_threshold for p in self.players):
                 self.game_over = True
 
-game = Game()
+    # ---- player leaves during an active game -----------------------
+    def remove_player(self, player_name: str):
+        """Called when a participant leaves; returns True if game was aborted."""
+        player_obj = next((p for p in self.players if p.name == player_name), None)
+        if not player_obj:
+            return False
+        # Remove from list
+        self.players = [p for p in self.players if p.id != player_obj.id]
+        # also from current round
+        if self.current_round:
+            self.current_round.remove_player(player_obj)
+        # If now fewer than required players, abort game
+        if len(self.players) < self.cfg.player_count:
+            self.aborted = True
+            self.game_over = True  # signal routers to stop
+        return self.aborted

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lobby - {{ cfg.title }}</title>
+  <style>
+    body{margin:0;font-family:"Segoe UI",sans-serif;background:#fdfdfd;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}
+    .card{padding:24px;border:1px solid #ccc;border-radius:8px;background:#fff;width:320px;text-align:center;box-shadow:0 2px 6px rgba(0,0,0,0.1)}
+    .btn{cursor:pointer;border:none;border-radius:6px;padding:8px 14px;font-weight:600;background:#2196f3;color:#fff;transition:background 0.2s;margin-top:12px;width:100%}
+    .btn:hover{background:#1976d2}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin-top:0">{{ cfg.title }}</h2>
+    <h3>참가 인원 ({{ players|length }}/{{ cfg.player_count }})</h3>
+    <ul id="playerList" style="list-style:none;padding:0">
+      {% for name in players %}<li>{{ name }}</li>{% endfor %}
+    </ul>
+    <!-- one‑line info message -->
+    <div id="infoBar" style="display:none;margin-top:8px;padding:6px;border:1px solid #4da6ff;border-radius:4px;background:#e6f4ff;color:#004a99;font-weight:bold;"></div>
+    {% if not self_name or self_name not in players %}
+    <form id="joinForm" method="POST" action="/join/{{ room_id }}" onsubmit="return validateNameUnique();">
+      <input name="name" type="text" placeholder="닉네임 입력" required style="width:100%;padding:8px;border:1px solid #bbb;border-radius:4px;font-size:15px;margin-bottom:10px">
+      <button class="btn">입장하기</button>
+    </form>
+    {% endif %}
+    {% if self_name and self_name in players %}
+      <form method="GET" action="/logout" style="margin-top:14px">
+        <button class="btn" style="background:#e74c3c">로비 나가기</button>
+      </form>
+    {% endif %}
+    <button id="copyBtn" class="btn" type="button" style="background:#8e44ad">초대 링크 복사</button>
+  </div>
+</body>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+  <script>
+    const socket = io();
+    const roomId = "{{ room_id }}";
+    socket.on("connect", () => {
+      socket.emit("join_lobby", {room: roomId});
+    });
+
+    // Update player list in real‑time
+    socket.on("lobby_update", data => {
+      if (data.room !== roomId) return;
+      const ul = document.getElementById("playerList");
+      ul.innerHTML = "";
+      data.players.forEach(n => {
+        const li = document.createElement("li");
+        li.textContent = n;
+        ul.appendChild(li);
+      });
+
+      // hide join form if current user already in list
+      if (data.self_joined){
+        document.getElementById("joinForm")?.remove();
+      }
+    });
+    // All players gathered: redirect to game
+    socket.on("lobby_start", data => {
+      if (data.room === roomId){
+        window.location.href = "/";
+      }
+    });
+
+    function validateNameUnique(){
+      const nameField = document.querySelector('#joinForm input[name="name"]');
+      const name = (nameField?.value || '').trim();
+      // collect current player names from the DOM list
+      const currentNames = Array.from(document.querySelectorAll('#playerList li'))
+                                .map(li=>li.textContent.trim());
+      if(currentNames.includes(name)){
+        alert('이미 사용 중인 닉네임입니다. 다른 닉네임을 입력해주세요.');
+        return false; // prevent submit
+      }
+      return true;
+    }
+
+    // Copy invite link to clipboard
+    document.getElementById('copyBtn').addEventListener('click', () => {
+      const inviteUrl = `${location.origin}/join/${roomId}`;
+      navigator.clipboard.writeText(inviteUrl)
+        .then(() => alert('초대 링크가 복사되었습니다!'))
+        .catch(() => alert('복사에 실패했습니다. 수동으로 복사해주세요.'));
+    });
+  </script>
+</html>
